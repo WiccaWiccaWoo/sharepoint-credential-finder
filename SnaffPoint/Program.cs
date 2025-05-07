@@ -21,6 +21,113 @@ namespace SnaffPoint
         private static bool isFQL = false;
         private static string RefinementFilters = null;
 
+        static void Main(string[] args)
+        {
+            // --local mode
+            if (args.Contains("--local"))
+            {
+                var localIndex = Array.IndexOf(args, "--local");
+                if (localIndex == -1 || localIndex + 1 >= args.Length)
+                {
+                    Console.WriteLine("Usage: --local <folderPath>");
+                    return;
+                }
+
+                var folderPath = args[localIndex + 1];
+                if (!Directory.Exists(folderPath))
+                {
+                    Console.WriteLine($"[!] Folder not found: {folderPath}");
+                    return;
+                }
+
+                string[] previewKeywords = new[] { "password", "token", "secret", "apikey" };
+                var files = Directory.GetFiles(folderPath, "*.*", SearchOption.AllDirectories)
+                    .Where(f => f.EndsWith(".txt") || f.EndsWith(".log") || f.EndsWith(".md"));
+
+                foreach (var file in files)
+                {
+                    var content = File.ReadAllLines(file);
+                    var matchingLines = content
+                    .Where(line => previewKeywords.Any(k => line.IndexOf(k, StringComparison.InvariantCultureIgnoreCase) >= 0))
+                    .Take(3)
+                    .ToList();
+
+
+                    if (matchingLines.Any())
+                    {
+                        Console.WriteLine($"\n[+] Found in: {file}");
+                        foreach (var line in matchingLines)
+                        {
+                            Console.WriteLine($"    Preview: {line.Trim()}");
+                        }
+                    }
+                }
+
+                return;
+            }
+
+            // SharePoint args parsing
+            foreach (var entry in args.Select((value, index) => new { index, value }))
+            {
+                switch (entry.value)
+                {
+                    case "-l":
+                    case "--fql":
+                        isFQL = true;
+                        break;
+                    case "-m":
+                    case "--max-rows":
+                        if (args[entry.index + 1].StartsWith("-")) { PrintHelp(); return; }
+                        if (!int.TryParse(args[entry.index + 1], out MaxRows)) { PrintHelp(); return; }
+                        break;
+                    case "-p":
+                    case "--preset":
+                        if (args[entry.index + 1].StartsWith("-")) { PrintHelp(); return; }
+                        PresetPath = args[entry.index + 1];
+                        break;
+                    case "-q":
+                    case "--query":
+                        if (args[entry.index + 1].StartsWith("-")) { PrintHelp(); return; }
+                        SingleQueryText = args[entry.index + 1];
+                        break;
+                    case "-r":
+                    case "--refinement-filter":
+                        if (args[entry.index + 1].StartsWith("-")) { PrintHelp(); return; }
+                        RefinementFilters = args[entry.index + 1];
+                        break;
+                    case "-t":
+                    case "--token":
+                        if (args[entry.index + 1].StartsWith("-")) { PrintHelp(); return; }
+                        BearerToken = "Bearer " + args[entry.index + 1];
+                        break;
+                    case "-u":
+                    case "--url":
+                        if (args[entry.index + 1].StartsWith("-")) { PrintHelp(); return; }
+                        SPUrl = args[entry.index + 1];
+                        break;
+                    case "-h":
+                    case "--help":
+                        PrintHelp();
+                        return;
+                }
+            }
+
+            if ((SPUrl == null || BearerToken == null) && !args.Contains("--local"))
+            {
+                PrintHelp();
+                return;
+            }
+
+            if (SingleQueryText != null)
+            {
+                DoSingleQuery();
+            }
+            else
+            {
+                QueryAllPresets();
+            }
+        }
+
         private static void LoadSearchPresetsFromFolder(string presetFolderPath)
         {
             try
@@ -42,90 +149,63 @@ namespace SnaffPoint
                 if (requestResponsePair != null)
                 {
                     HttpWebResponse response = requestResponsePair.Item2;
-                    if (null != response)
+                    if (response != null && response.StatusCode != HttpStatusCode.OK)
                     {
-                        if (!response.StatusCode.Equals(HttpStatusCode.OK))
-                        {
-                            string status = String.Format("HTTP {0} {1}", (int)response.StatusCode, response.StatusDescription);
-                            Console.WriteLine("Request returned with following status: " + status);
-                        }
+                        Console.WriteLine($"Request returned status: HTTP {(int)response.StatusCode} {response.StatusDescription}");
                     }
                 }
                 searchResults = GetResultItem(requestResponsePair);
-
-                // success, return the results
                 return searchResults;
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Request failed with exception: " + ex.Message);
+                Console.WriteLine("Request failed: " + ex.Message);
             }
             return searchResults;
         }
 
         private static SearchQueryResult GetResultItem(HttpRequestResponsePair requestResponsePair)
         {
-            SearchQueryResult searchResults;
             var request = requestResponsePair.Item1;
-
             using (var response = requestResponsePair.Item2)
+            using (var reader = new StreamReader(response.GetResponseStream()))
             {
-                using (var reader = new StreamReader(response.GetResponseStream()))
+                var content = reader.ReadToEnd();
+                var requestHeaders = new NameValueCollection();
+                foreach (var h in request.Headers.AllKeys) requestHeaders.Add(h, request.Headers[h]);
+
+                var responseHeaders = new NameValueCollection();
+                foreach (var h in response.Headers.AllKeys) responseHeaders.Add(h, response.Headers[h]);
+
+                return new SearchQueryResult
                 {
-                    var content = reader.ReadToEnd();
-                    NameValueCollection requestHeaders = new NameValueCollection();
-                    foreach (var header in request.Headers.AllKeys)
-                    {
-                        requestHeaders.Add(header, request.Headers[header]);
-                    }
-
-                    NameValueCollection responseHeaders = new NameValueCollection();
-                    foreach (var header in response.Headers.AllKeys)
-                    {
-                        responseHeaders.Add(header, response.Headers[header]);
-                    }
-
-                    string requestContent = "";
-                    if (request.Method == "POST")
-                    {
-                        requestContent = requestResponsePair.Item3;
-                    }
-
-                    searchResults = new SearchQueryResult
-                    {
-                        RequestUri = request.RequestUri,
-                        RequestMethod = request.Method,
-                        RequestContent = requestContent,
-                        ContentType = response.ContentType,
-                        ResponseContent = content,
-                        RequestHeaders = requestHeaders,
-                        ResponseHeaders = responseHeaders,
-                        StatusCode = response.StatusCode,
-                        StatusDescription = response.StatusDescription,
-                        HttpProtocolVersion = response.ProtocolVersion.ToString()
-                    };
-                    searchResults.Process();
-                }
+                    RequestUri = request.RequestUri,
+                    RequestMethod = request.Method,
+                    RequestContent = request.Method == "POST" ? requestResponsePair.Item3 : "",
+                    ContentType = response.ContentType,
+                    ResponseContent = content,
+                    RequestHeaders = requestHeaders,
+                    ResponseHeaders = responseHeaders,
+                    StatusCode = response.StatusCode,
+                    StatusDescription = response.StatusDescription,
+                    HttpProtocolVersion = response.ProtocolVersion.ToString()
+                };
             }
-            return searchResults;
         }
 
         private static void ExportResultsToCsv(Dictionary<string, List<(string Title, string Path)>> allResults, string filePath)
         {
             var sb = new StringBuilder();
             sb.AppendLine("Preset Name,Title,Path");
-
             foreach (var preset in allResults)
             {
                 foreach (var result in preset.Value)
                 {
-                    // Escape double quotes and commas
                     string safeTitle = result.Title.Replace("\"", "\"\"");
                     string safePath = result.Path.Replace("\"", "\"\"");
                     sb.AppendLine($"\"{preset.Key}\",\"{safeTitle}\",\"{safePath}\"");
                 }
             }
-
             File.WriteAllText(filePath, sb.ToString());
             Console.WriteLine($"CSV file saved to: {filePath}");
         }
@@ -133,21 +213,20 @@ namespace SnaffPoint
         static void QueryAllPresets()
         {
             LoadSearchPresetsFromFolder(PresetPath);
-
-            var allResults = new Dictionary<string, List<(string Title, string Path)>>();
+            var allResults = new Dictionary<string, List<(string, string)>>();
 
             if (_SearchPresets.Presets.Count > 0)
             {
                 foreach (var preset in _SearchPresets.Presets)
                 {
-                    Console.WriteLine("\n" + preset.Name + "\n" + new String('=', preset.Name.Length) + "\n");
+                    Console.WriteLine($"\n{preset.Name}\n{new string('=', preset.Name.Length)}\n");
                     preset.Request.Token = BearerToken;
                     preset.Request.SharePointSiteUrl = SPUrl;
                     preset.Request.RowLimit = MaxRows;
                     preset.Request.AcceptType = AcceptType.Json;
                     preset.Request.AuthenticationType = AuthenticationType.SPOManagement;
 
-                    SearchQueryResult results = StartSearchQueryRequest(preset.Request);
+                    var results = StartSearchQueryRequest(preset.Request);
                     DisplayResults(results);
 
                     var resultList = new List<(string, string)>();
@@ -158,7 +237,6 @@ namespace SnaffPoint
                             resultList.Add((item.Title, item.Path));
                         }
                     }
-
                     allResults[preset.Name] = resultList;
                 }
 
@@ -166,50 +244,57 @@ namespace SnaffPoint
             }
             else
             {
-                Console.WriteLine("No presets were found in " + PresetPath);
+                Console.WriteLine("No presets found in " + PresetPath);
             }
         }
 
-
         private static void DisplayResults(SearchQueryResult results)
         {
-            if (results != null)
+            if (results?.PrimaryQueryResult == null)
             {
-                if (results.PrimaryQueryResult != null)
+                Console.WriteLine("Found no results... maybe the request failed?");
+                return;
+            }
+
+            Console.WriteLine($"Found {results.PrimaryQueryResult.TotalRows} results");
+            if (results.PrimaryQueryResult.TotalRows > MaxRows)
+            {
+                Console.WriteLine($"Only showing {MaxRows} results.");
+            }
+
+            foreach (var item in results.PrimaryQueryResult.RelevantResults)
+            {
+                Console.WriteLine("---");
+                Console.WriteLine(item.Title);
+                Console.WriteLine(item.Path);
+                Console.WriteLine(typeof(ResultItem));
+
+                try
                 {
-                    Console.WriteLine("Found " + results.PrimaryQueryResult.TotalRows + " results");
-                    if (results.PrimaryQueryResult.TotalRows > MaxRows)
-                    {
-                        Console.WriteLine("Only showing " + MaxRows + " results, though!");
-                    }        
-                    if (results.PrimaryQueryResult.TotalRows > 0)
-                    {
-                        foreach (ResultItem item in results.PrimaryQueryResult.RelevantResults)
-                        {
-                            Console.WriteLine("---");
-                            Console.WriteLine(item.Title);
-                            Console.WriteLine(item.Path);
-                            Console.WriteLine(typeof(ResultItem));
+                    var webClient = new WebClient();
+                    webClient.Headers.Add("Authorization", BearerToken);
+                    var rawContent = webClient.DownloadString(item.Path);
 
+                    string[] previewKeywords = new[] { "password", "token", "apikey", "secret" };
+                    var matchedLines = rawContent.Split('\n')
+                        .Where(line => previewKeywords.Any(k => line.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0))
+                        .Take(3);
 
-                        }
+                    foreach (var line in matchedLines)
+                    {
+                        Console.WriteLine($"    Preview: {line.Trim()}");
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    Console.WriteLine("Found no results... maybe the request failed?");
+                    Console.WriteLine($"    [!] Preview fetch failed: {ex.Message}");
                 }
-            }
-            else
-            {
-                Console.WriteLine("Result are null ! What happened there?");
             }
         }
 
         private static void DoSingleQuery()
         {
-            // preparing the request for you
-            SearchQueryRequest request = new SearchQueryRequest
+            var request = new SearchQueryRequest
             {
                 SharePointSiteUrl = SPUrl,
                 AcceptType = AcceptType.Json,
@@ -218,14 +303,11 @@ namespace SnaffPoint
                 QueryText = SingleQueryText,
                 HttpMethodType = HttpMethodType.Get,
                 EnableFql = isFQL,
-                RowLimit = MaxRows
+                RowLimit = MaxRows,
+                RefinementFilters = RefinementFilters
             };
-            if (RefinementFilters != null)
-            {
-                request.RefinementFilters = RefinementFilters;
-            }
-            // DO IT, DO IT, DO IT !
-            SearchQueryResult results = StartSearchQueryRequest(request);
+
+            var results = StartSearchQueryRequest(request);
             DisplayResults(results);
         }
 
@@ -237,131 +319,22 @@ namespace SnaffPoint
   BP           dBP      BB                       dB' dBP.BP         dBP         
   `BBBBb  dBP dBP   dBP BB   dBBBP  dBBBP    dBBBP' dBP.BP dBP dBP dBP   dBP    
      dBP dBP dBP   dBP  BB  dBP    dBP      dBP    dBP.BP dBP dBP dBP   dBP     
-dBBBBP' dBP dBP   dBBBBBBB dBP    dBP      dBP    dBBBBP dBP dBP dBP   dBP      
+dBBBBP' dBP dBP   dBBBBBBB dBP    dBP      dBP    dBBBBP dBP dBP dBP   dBP
 
-                           https://github.com/nheiniger/snaffpoint
-                                               
-SnaffPoint, candy finder for SharePoint
+SnaffPoint - SharePoint + Local Keyword Scanner
+Usage:
+  SnaffPoint.exe -u <URL> -t <TOKEN> [options]
+  SnaffPoint.exe --local <folderPath>
 
-Usage: SnaffPoint.exe -u URL -t JWT [OPTIONS]
-
--h, --help              This is me :)
-
-Mandatory:
--u, --url               SharePoint online URL where you want to search
--t, --token             Bearer token that grants access to said SharePoint
-
-Common options:
--m, --max-rows          Max. number of rows to return per search query (default is 50)
-
-Presets mode (default):
--p, --preset            Path to a folder containing XML search presets (default is ./presets)
-
-Single query mode:
--q, --query             Query search string
--l, --fql               Enables FQL (default is KQL)
--r, --refinement-filter Adds a refinement filter");
-        }
-
-        static void Main(string[] args)
-        {
-            foreach (var entry in args.Select((value, index) => new { index, value }))
-            {
-                switch (entry.value)
-                {
-                    // do you want FQL powaa?
-                    case "-l":
-                    case "--fql":
-                        isFQL = true;
-                        break;
-                    // no need for hundreds of results
-                    case "-m":
-                    case "--max-rows":
-                        if (args[entry.index + 1].StartsWith("-"))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        if (! int.TryParse(args[entry.index + 1], out MaxRows))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        break;
-                    // preset path, load presets
-                    case "-p":
-                    case "--preset":
-                        if (args[entry.index + 1].StartsWith("-"))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        PresetPath = args[entry.index + 1];
-                        break;
-                    // single query
-                    case "-q":
-                    case "--query":
-                        if (args[entry.index + 1].StartsWith("-"))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        SingleQueryText = args[entry.index + 1];
-                        break;
-                    // fine control is good :)
-                    case "-r":
-                    case "--refinement-filter":
-                        if (args[entry.index + 1].StartsWith("-"))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        RefinementFilters = args[entry.index + 1];
-                        break;
-                    // Bearer token (JWT)
-                    case "-t":
-                    case "--token":
-                        if (args[entry.index + 1].StartsWith("-"))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        BearerToken = "Bearer " + args[entry.index + 1];
-                        break;
-                    // SharePoint online URL
-                    case "-u":
-                    case "--url":
-                        if (args[entry.index + 1].StartsWith("-"))
-                        {
-                            PrintHelp();
-                            return;
-                        }
-                        SPUrl = args[entry.index + 1];
-                        break;
-                    // send help
-                    case "-h":
-                    case "--help":
-                        PrintHelp();
-                        return;
-                }
-            }
-
-            // did you read the doc?
-            if (SPUrl == null || BearerToken == null)
-            {
-                PrintHelp();
-                return;
-            }
-
-            // if you specify a query I assume you want an answer, otherwise I have some defaults
-            if (SingleQueryText != null)
-            {
-                DoSingleQuery();
-            }
-            else
-            {
-                QueryAllPresets();
-            }
+Options:
+  -p, --preset            Path to XML preset folder
+  -q, --query             KQL search query
+  -r, --refinement-filter Add refinement filter
+  -m, --max-rows          Max number of rows (default 50)
+  -l, --fql               Use FQL instead of KQL
+  -h, --help              Show this help message
+  --local <path>          Run local keyword scan instead of SharePoint
+");
         }
     }
 }
