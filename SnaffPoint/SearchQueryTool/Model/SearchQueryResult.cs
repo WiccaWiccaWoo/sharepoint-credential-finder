@@ -36,6 +36,16 @@ namespace SearchQueryTool.Model
             }
         }
 
+
+        public string Highlight
+        {
+            get
+            {
+                return this.FirstOrDefault(x => x.Key.Equals("HitHighlightedSummary", StringComparison.InvariantCultureIgnoreCase)).Value;
+            }
+        }
+
+
     }
 
     public class RefinerResult : List<RefinementItem>

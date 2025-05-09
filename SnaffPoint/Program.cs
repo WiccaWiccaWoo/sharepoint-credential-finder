@@ -110,10 +110,10 @@ namespace SnaffPoint
             return searchResults;
         }
 
-        private static void ExportResultsToCsv(Dictionary<string, List<(string Title, string Path)>> allResults, string filePath)
+        private static void ExportResultsToCsv(Dictionary<string, List<(string Title, string Path, string Highlight)>> allResults, string filePath)
         {
             var sb = new StringBuilder();
-            sb.AppendLine("Preset Name,Title,Path");
+            sb.AppendLine("Preset Name,Title,Path,Highlight");
 
             foreach (var preset in allResults)
             {
@@ -122,7 +122,8 @@ namespace SnaffPoint
                     // Escape double quotes and commas
                     string safeTitle = result.Title.Replace("\"", "\"\"");
                     string safePath = result.Path.Replace("\"", "\"\"");
-                    sb.AppendLine($"\"{preset.Key}\",\"{safeTitle}\",\"{safePath}\"");
+                    string safeHighlight = result.Highlight.Replace("\"", "\"\"");
+                    sb.AppendLine($"\"{preset.Key}\",\"{safeTitle}\",\"{safePath}\",\"{safeHighlight}\"");
                 }
             }
 
@@ -134,7 +135,7 @@ namespace SnaffPoint
         {
             LoadSearchPresetsFromFolder(PresetPath);
 
-            var allResults = new Dictionary<string, List<(string Title, string Path)>>();
+            var allResults = new Dictionary<string, List<(string Title, string Path, string Highlight)>>();
 
             if (_SearchPresets.Presets.Count > 0)
             {
@@ -150,12 +151,12 @@ namespace SnaffPoint
                     SearchQueryResult results = StartSearchQueryRequest(preset.Request);
                     DisplayResults(results);
 
-                    var resultList = new List<(string, string)>();
+                    var resultList = new List<(string, string, string)>();
                     if (results?.PrimaryQueryResult?.RelevantResults != null)
                     {
                         foreach (var item in results.PrimaryQueryResult.RelevantResults)
                         {
-                            resultList.Add((item.Title, item.Path));
+                            resultList.Add((item.Title, item.Path, item.Highlight));
                         }
                     }
 
@@ -189,9 +190,7 @@ namespace SnaffPoint
                             Console.WriteLine("---");
                             Console.WriteLine(item.Title);
                             Console.WriteLine(item.Path);
-                            Console.WriteLine(typeof(ResultItem));
-
-
+                            Console.WriteLine(item.Highlight);
                         }
                     }
                 }
